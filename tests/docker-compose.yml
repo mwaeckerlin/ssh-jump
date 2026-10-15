@@ -1,0 +1,98 @@
+# Functional test stack for mwaeckerlin/ssh-jump, driven by tests/run.sh.
+#
+# `gitea` is a real Gitea with its SSH server on 2222, reachable only on the
+# network `inner`. `client` sits only on `outer`, so it reaches Gitea through
+# a jump host or not at all. The jump hosts sit on both networks:
+#   jump             defaults, host key generated into a volume
+#   jump-restricted  SSH_PERMIT_OPEN limits the destinations
+#   jump-snippet     a snippet in /etc/ssh/sshd_config.d limits them
+#   jump-hostkey     the host key comes from a secret
+#   jump-refusals    sshd's penalty for failed logins off, for the refusals
+# The keys are generated in `client` at runtime; tests/run.sh hands the public
+# key and the test host key over as environment variables, which compose
+# turns into secrets.
+
+services:
+
+  gitea:
+    image: gitea/gitea:latest-rootless
+    environment:
+      GITEA__security__INSTALL_LOCK: "true"
+      GITEA__database__DB_TYPE: sqlite3
+      GITEA__server__ROOT_URL: http://gitea:3000/
+      GITEA__server__SSH_DOMAIN: gitea
+      GITEA__server__SSH_PORT: "2222"
+      GITEA__server__SSH_LISTEN_PORT: "2222"
+      GITEA__server__START_SSH_SERVER: "true"
+      GITEA__service__DISABLE_REGISTRATION: "true"
+    networks: [inner]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:3000/api/healthz"]
+      interval: 2s
+      timeout: 5s
+      retries: 60
+
+  client:
+    image: ssh-jump-test-client
+    build: client
+    networks: [outer]
+
+  jump:
+    image: mwaeckerlin/ssh-jump
+    secrets: [authorized_keys]
+    volumes:
+      - hostkeys:/var/lib/ssh-jump
+    networks: [inner, outer]
+
+  jump-restricted:
+    image: mwaeckerlin/ssh-jump
+    environment:
+      SSH_PERMIT_OPEN: "gitea:2222"
+    secrets: [authorized_keys]
+    networks: [inner, outer]
+
+  jump-snippet:
+    image: mwaeckerlin/ssh-jump
+    secrets: [authorized_keys]
+    configs:
+      - source: permit-gitea
+        target: /etc/ssh/sshd_config.d/permit-gitea.conf
+    networks: [inner, outer]
+
+  jump-hostkey:
+    image: mwaeckerlin/ssh-jump
+    secrets: [authorized_keys, ssh_host_ed25519_key]
+    networks: [inner, outer]
+
+  # the refusal checks fail one login after the other from the same client;
+  # sshd's PerSourcePenalties would refuse the client after the third, so
+  # this one measures each refusal on its own, and `jump` measures the penalty
+  jump-refusals:
+    image: mwaeckerlin/ssh-jump
+    secrets: [authorized_keys]
+    configs:
+      - source: no-penalties
+        target: /etc/ssh/sshd_config.d/no-penalties.conf
+    networks: [inner, outer]
+
+secrets:
+  authorized_keys:
+    environment: JUMP_AUTHORIZED_KEYS
+  ssh_host_ed25519_key:
+    environment: JUMP_HOST_KEY
+
+configs:
+  permit-gitea:
+    content: |
+      Match all
+          PermitOpen gitea:2222
+  no-penalties:
+    content: |
+      PerSourcePenalties no
+
+networks:
+  inner:
+  outer:
+
+volumes:
+  hostkeys:

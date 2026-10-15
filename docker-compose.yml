@@ -1,0 +1,19 @@
+# Standalone smoke test: AUTHORIZED_KEYS holds the public keys that may log
+# in, compose hands them to the container as the secret authorized_keys.
+services:
+  ssh-jump:
+    image: mwaeckerlin/ssh-jump
+    build: .
+    ports:
+      - "2222:2222"
+    secrets:
+      - authorized_keys
+    volumes:
+      - hostkeys:/var/lib/ssh-jump
+
+secrets:
+  authorized_keys:
+    environment: AUTHORIZED_KEYS
+
+volumes:
+  hostkeys:
