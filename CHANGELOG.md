@@ -1,5 +1,8 @@
 # Changelog
 
+- 2026-10-15 **1.0.1**
+    - Test suite: the check that repeated failed logins block an address reads the log of sshd, so it gives the same result on every machine; the GitHub runners failed it on the message of the client
+
 - 2026-10-15 **1.0.0**
     - Initial release: headless SSH jump host
         - forwards a client's connection to a destination behind it (`ssh -J`, `ProxyJump`); the destination checks the client's own key, so git over SSH reaches Gitea with the user's key

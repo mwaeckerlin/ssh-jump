@@ -205,12 +205,21 @@ fi
 
 # ...and repeated failed logins from one address make sshd refuse that address
 # for a while, even with the right key (sshd's PerSourcePenalties)
+# measured at the server: what the client prints for the refused connection
+# differs between machines (locally «Connection reset by peer», on the GitHub
+# runners nothing at all), so the check reads sshd's log
+_jump_log() { docker compose -f "$COMPOSE" logs --no-color jump 2>&1; }
+_count() { grep -c "$1" <<< "$(_jump_log)" || true; }
 for _ in 1 2 3 4 5; do _stranger jump; done
+ACCEPTED_BEFORE="$(_count "Accepted publickey for jump")"
 _try ssh -p 2222 jump@jump -W gitea:2222
-if [[ $RC -ne 0 && ( "$OUT" == *"reset"* || "$OUT" == *"closed"* ) ]]; then
+ACCEPTED_AFTER="$(_count "Accepted publickey for jump")"
+PENALTIES="$(_count "penalty")"
+if [[ $RC -ne 0 && "$ACCEPTED_AFTER" == "$ACCEPTED_BEFORE" && "$PENALTIES" -gt 0 ]]; then
     _pass "repeated_failures_block_source"
 else
-    _fail "repeated_failures_block_source" "the right key still connected after five failures: rc=${RC}: ${OUT}"
+    _fail "repeated_failures_block_source" "rc=${RC}, accepted logins ${ACCEPTED_BEFORE} → ${ACCEPTED_AFTER}, penalty lines ${PENALTIES}: ${OUT}
+$(grep -i "penalt\|drop\|Accepted\|Failed\|Connection" <<< "$(_jump_log)" | tail -20)"
 fi
 
 # 6. the image checks its own health: healthy from the image's HEALTHCHECK,
