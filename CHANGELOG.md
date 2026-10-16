@@ -1,5 +1,8 @@
 # Changelog
 
+- 2026-10-15 **1.0.2**
+    - The jump host logs in as `somebody`, uid 100, the run user of every mwaeckerlin image, in place of a user `jump` of its own (uid 102): clients write `somebody@` in `ProxyJump`, and a volume for `/var/lib/ssh-jump` belongs to uid 100
+
 - 2026-10-15 **1.0.1**
     - Test suite: the check that repeated failed logins block an address reads the log of sshd, so it gives the same result on every machine; the GitHub runners failed it on the message of the client
 

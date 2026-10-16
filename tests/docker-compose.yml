@@ -66,7 +66,8 @@ services:
 
   # the refusal checks fail one login after the other from the same client;
   # sshd's PerSourcePenalties would refuse the client after the third, so
-  # this one measures each refusal on its own, and `jump` measures the penalty
+  # this one measures each refusal on its own, and the service jump measures
+  # the penalty
   jump-refusals:
     image: mwaeckerlin/ssh-jump
     secrets: [authorized_keys]

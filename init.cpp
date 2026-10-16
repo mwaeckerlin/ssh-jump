@@ -37,6 +37,7 @@ the server sends its SSH-2.0 identification.
 #include <iostream>
 #include <iterator>
 #include <netinet/in.h>
+#include <pwd.h>
 #include <stdexcept>
 #include <string>
 #include <sys/socket.h>
@@ -158,7 +159,7 @@ banner_probe() {
 void
 copy_host_key() {
   std::ifstream in(SECRET_KEY, std::ios::binary);
-  if (!in) throw std::runtime_error(std::string("cannot read ") + SECRET_KEY + ": the secret must be readable for the user jump");
+  if (!in) throw std::runtime_error(std::string("cannot read ") + SECRET_KEY + ": the secret must be readable for the user the container runs as");
   std::string key((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
   if (key.empty()) throw std::runtime_error(std::string(SECRET_KEY) + " is empty");
   if (key.back() != '\n') key += '\n';
@@ -186,7 +187,7 @@ generate_host_key() {
   int status = 0;
   if (waitpid(pid, &status, 0) < 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0)
     throw std::runtime_error(std::string("ssh-keygen could not write ") + VOLUME_KEY
-                             + ": the volume /var/lib/ssh-jump must be writable for the user jump");
+                             + ": the volume /var/lib/ssh-jump must be writable for the user the container runs as");
 }
 
 } // namespace
@@ -208,6 +209,12 @@ int main(int argc, char *argv[]) try {
   if (argc > 1 && std::string(argv[1]) == "--healthcheck")
     return banner_probe();
 
+  // sshd does not run as root and can therefore let in only the user it runs
+  // as: the run user of the image family
+  const passwd *user = getpwuid(getuid());
+  if (!user) throw std::runtime_error("the user the container runs as has no entry in /etc/passwd");
+  const std::string login = user->pw_name;
+
   const char *host_key = VOLUME_KEY;
   if (exists(SECRET_KEY)) {
     copy_host_key();
@@ -224,7 +231,7 @@ int main(int argc, char *argv[]) try {
   conf += "LogLevel INFO\n";
   conf += "UseDNS no\n";
   // one user, keys only
-  conf += "AllowUsers jump\n";
+  conf += "AllowUsers " + login + "\n";
   conf += "PermitRootLogin no\n";
   conf += "AuthenticationMethods publickey\n";
   conf += "PubkeyAuthentication yes\n";

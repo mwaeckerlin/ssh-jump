@@ -6,6 +6,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 COMPOSE="tests/docker-compose.yml"
 IMAGE="mwaeckerlin/ssh-jump"
+# the login of the jump host: the run user of the image family
+LOGIN="somebody"
 
 # compose reads both on every call; the real values follow once the client
 # has generated the keys
@@ -52,7 +54,7 @@ JUMP_HOST_KEY="$(_client cat /home/tester/hostkey)"
 HOST_PUBKEY="$(_client cat /home/tester/hostkey.pub | awk '{ print $2 }')"
 export JUMP_AUTHORIZED_KEYS JUMP_HOST_KEY
 
-_client sh -c 'cat > /home/tester/.ssh/config' <<'EOF'
+_client sh -c 'cat > /home/tester/.ssh/config' <<EOF
 Host *
     StrictHostKeyChecking no
     UserKnownHostsFile /dev/null
@@ -64,17 +66,17 @@ Host *
 Host gitea
     User git
     Port 2222
-    ProxyJump jump@jump:2222
+    ProxyJump ${LOGIN}@jump:2222
 Host gitea-restricted
     HostName gitea
     User git
     Port 2222
-    ProxyJump jump@jump-restricted:2222
+    ProxyJump ${LOGIN}@jump-restricted:2222
 Host gitea-snippet
     HostName gitea
     User git
     Port 2222
-    ProxyJump jump@jump-snippet:2222
+    ProxyJump ${LOGIN}@jump-snippet:2222
 EOF
 _client chmod 600 /home/tester/.ssh/config
 
@@ -116,27 +118,27 @@ else
 fi
 
 # 2. nothing runs on the jump host: no command, no terminal, no remote forwarding
-_try ssh -p 2222 jump@jump id
+_try ssh -p 2222 "${LOGIN}@jump" id
 if [[ $RC -ne 0 && "$OUT" != *"uid="* ]]; then
     _pass "command_refused"
 else
     _fail "command_refused" "rc=${RC}: ${OUT}"
 fi
-_try ssh -tt -p 2222 jump@jump
+_try ssh -tt -p 2222 "${LOGIN}@jump"
 if [[ $RC -ne 0 ]]; then
     _pass "terminal_refused"
 else
     _fail "terminal_refused" "a terminal session ended with rc=0: ${OUT}"
 fi
-_try ssh -N -o ExitOnForwardFailure=yes -R 9000:localhost:22 -p 2222 jump@jump
+_try ssh -N -o ExitOnForwardFailure=yes -R 9000:localhost:22 -p 2222 "${LOGIN}@jump"
 if [[ $RC -ne 0 && "$OUT" == *"forwarding failed"* ]]; then
     _pass "remote_forwarding_refused"
 else
     _fail "remote_forwarding_refused" "rc=${RC}: ${OUT}"
 fi
 
-# 3. only the user jump, only with a key from authorized_keys
-_try ssh -o PubkeyAuthentication=no -p 2222 jump@jump-refusals -W gitea:2222
+# 3. only the run user, only with a key from authorized_keys
+_try ssh -o PubkeyAuthentication=no -p 2222 "${LOGIN}@jump-refusals" -W gitea:2222
 if [[ $RC -ne 0 && "$OUT" == *"Permission denied (publickey)"* ]]; then
     _pass "password_refused"
 else
@@ -145,7 +147,7 @@ fi
 # -F /dev/null: the config would add the accepted key beside the unknown one
 _stranger() {
     _try ssh -F /dev/null -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes \
-        -o IdentitiesOnly=yes -i /home/tester/.ssh/stranger -p 2222 "jump@$1" -W gitea:2222
+        -o IdentitiesOnly=yes -i /home/tester/.ssh/stranger -p 2222 "${LOGIN}@$1" -W gitea:2222
 }
 _stranger jump-refusals
 if [[ $RC -ne 0 && "$OUT" == *"Permission denied"* ]]; then
@@ -153,7 +155,7 @@ if [[ $RC -ne 0 && "$OUT" == *"Permission denied"* ]]; then
 else
     _fail "unknown_key_refused" "rc=${RC}: ${OUT}"
 fi
-for user in root git tester; do
+for user in root git tester jump; do
     _try ssh -p 2222 "${user}@jump-refusals" -W gitea:2222
     if [[ $RC -ne 0 && "$OUT" == *"Permission denied"* ]]; then
         _pass "user_${user}_refused"
@@ -171,7 +173,7 @@ for host in restricted snippet; do
         _fail "${host}_allows_gitea_ssh" "rc=${RC}: ${OUT}"
     fi
     # LogLevel INFO: ssh names the reason of a refused channel only from INFO on
-    _try ssh -o LogLevel=INFO -p 2222 "jump@jump-${host}" -W gitea:3000
+    _try ssh -o LogLevel=INFO -p 2222 "${LOGIN}@jump-${host}" -W gitea:3000
     if [[ $RC -ne 0 && "$OUT" == *"administratively prohibited"* ]]; then
         _pass "${host}_refuses_other_destination"
     else
@@ -179,7 +181,7 @@ for host in restricted snippet; do
     fi
 done
 # the default forwards to any destination: Gitea's web port answers HTTP
-_try sh -c "printf 'GET /api/healthz HTTP/1.0\r\nHost: gitea\r\n\r\n' | ssh -p 2222 jump@jump -W gitea:3000"
+_try sh -c "printf 'GET /api/healthz HTTP/1.0\r\nHost: gitea\r\n\r\n' | ssh -p 2222 ${LOGIN}@jump -W gitea:3000"
 if [[ "$OUT" == "HTTP/1."* ]]; then
     _pass "default_allows_any_destination"
 else
@@ -211,9 +213,9 @@ fi
 _jump_log() { docker compose -f "$COMPOSE" logs --no-color jump 2>&1; }
 _count() { grep -c "$1" <<< "$(_jump_log)" || true; }
 for _ in 1 2 3 4 5; do _stranger jump; done
-ACCEPTED_BEFORE="$(_count "Accepted publickey for jump")"
-_try ssh -p 2222 jump@jump -W gitea:2222
-ACCEPTED_AFTER="$(_count "Accepted publickey for jump")"
+ACCEPTED_BEFORE="$(_count "Accepted publickey for ${LOGIN}")"
+_try ssh -p 2222 "${LOGIN}@jump" -W gitea:2222
+ACCEPTED_AFTER="$(_count "Accepted publickey for ${LOGIN}")"
 PENALTIES="$(_count "penalty")"
 if [[ $RC -ne 0 && "$ACCEPTED_AFTER" == "$ACCEPTED_BEFORE" && "$PENALTIES" -gt 0 ]]; then
     _pass "repeated_failures_block_source"
@@ -238,11 +240,14 @@ fi
 
 # 7. the user the server runs as: deployments give the volume to this uid
 PASSWD="$(docker compose -f "$COMPOSE" cp jump:/etc/passwd - | tar -xO)"
-JUMP_UID="$(awk -F: '$1 == "jump" { print $3 }' <<< "$PASSWD")"
-if [[ "$JUMP_UID" == "102" ]]; then
-    _pass "jump_user_uid_102"
+# the login is the family's run user somebody, uid 100, and its shell is the
+# init that refuses every command; no user jump of its own
+LOGIN_ENTRY="$(awk -F: -v user="$LOGIN" '$1 == user { print $3 ":" $7 }' <<< "$PASSWD")"
+JUMP_ENTRY="$(awk -F: '$1 == "jump"' <<< "$PASSWD")"
+if [[ "$LOGIN_ENTRY" == "100:/usr/bin/init" && -z "$JUMP_ENTRY" ]]; then
+    _pass "run_user_somebody_uid_100"
 else
-    _fail "jump_user_uid_102" "the user jump has uid «${JUMP_UID}»"
+    _fail "run_user_somebody_uid_100" "${LOGIN} has «${LOGIN_ENTRY}», jump has «${JUMP_ENTRY}»"
 fi
 
 # 8. the secrets and the snippet reach the containers without a host bind mount
