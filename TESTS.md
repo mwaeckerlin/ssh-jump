@@ -20,8 +20,16 @@ The stack runs a real Gitea on the network `inner` and the client on the network
 ## Config validation (`tests/config-validation.sh`)
 
 - **F7** reject_permit_open_injection, reject_permit_open_no_port, reject_permit_open_bad_port, reject_permit_open_port_range, reject_permit_open_bad_host, reject_permit_open_space — every malformed value stops the container with `invalid SSH_PERMIT_OPEN`.
+- **F7, F12** reject_address_family_injection, reject_address_family_unknown — a value with a line break and an unknown family stop the container with `invalid SSH_ADDRESS_FAMILY`.
+- **F7, F13** reject_client_alive_interval_injection, reject_client_alive_interval_not_number, reject_client_alive_interval_negative — a value with a line break, a time with a unit and a negative number stop the container with `invalid SSH_CLIENT_ALIVE_INTERVAL`.
 - **F7** accept_defaults, accept_permit_open_list, accept_permit_open_none — the default, a list of host, IPv4, IPv6 and wildcard destinations, and `none` pass.
+- **F12** accept_address_family_any, config_address_family_default, config_address_family_override — `any` passes; the `sshd_config` the started container writes carries `AddressFamily inet` without the variable and `AddressFamily inet6` with `SSH_ADDRESS_FAMILY=inet6`.
+- **F13** accept_client_alive_interval_off, config_client_alive_interval_default, config_client_alive_interval_override — `0` passes; the `sshd_config` the started container writes carries `ClientAliveInterval 60` without the variable and `ClientAliveInterval 300` with `SSH_CLIENT_ALIVE_INTERVAL=300`.
 - **F2** shell_command_refused — started as `init -c id`, the way sshd starts a session, the start program refuses and runs nothing.
+
+## Docs contract (`tests/docs-contract.sh`)
+
+- **F4, F12, F13** readme_documents_SSH_PERMIT_OPEN, readme_documents_SSH_ADDRESS_FAMILY, readme_documents_SSH_CLIENT_ALIVE_INTERVAL, dockerfile_env_SSH_PERMIT_OPEN, dockerfile_env_SSH_ADDRESS_FAMILY, dockerfile_env_SSH_CLIENT_ALIVE_INTERVAL — every variable the start program reads stands in the README table and in the `ENV` of the Dockerfile with the default the start program falls back to.
 
 ## Image contract
 

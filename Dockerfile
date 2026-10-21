@@ -27,7 +27,9 @@ RUN tar cph \
 
 FROM mwaeckerlin/scratch
 ENV CONTAINERNAME="ssh-jump" \
-    SSH_PERMIT_OPEN="any"
+    SSH_PERMIT_OPEN="any" \
+    SSH_ADDRESS_FAMILY="inet" \
+    SSH_CLIENT_ALIVE_INTERVAL="60"
 EXPOSE 2222
 VOLUME /var/lib/ssh-jump
 USER ${RUN_USER}

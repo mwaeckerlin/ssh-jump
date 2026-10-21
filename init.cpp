@@ -14,16 +14,18 @@ Behaviour:
      the shell of the user, which is this program; a session is never
      what the jump host is for, so `-c <command>` and a login shell end
      with an error.
-  2. Check SSH_PERMIT_OPEN against what PermitOpen accepts and refuse
-     anything else with `invalid SSH_PERMIT_OPEN`.
+  2. Check SSH_PERMIT_OPEN, SSH_ADDRESS_FAMILY and SSH_CLIENT_ALIVE_INTERVAL
+     against what sshd accepts for them and refuse anything else with
+     `invalid <variable>`.
   3. Take the host key from the secret /run/secrets/ssh_host_ed25519_key
      when it exists (copied to /run/ssh-jump, mode 0600, with a missing
      final line break added), otherwise from the volume /var/lib/ssh-jump,
      where ssh-keygen creates it on the first start.
   4. Compose /run/ssh-jump/sshd_config and execv sshd in the foreground.
 
-Supports --healthcheck: connects to 127.0.0.1:2222 and passes only when
-the server sends its SSH-2.0 identification.
+Supports --healthcheck: connects to 127.0.0.1:2222, or [::1]:2222 with
+SSH_ADDRESS_FAMILY=inet6, and passes only when the server sends its SSH-2.0
+identification.
 
 */
 
@@ -125,23 +127,52 @@ valid_permit_open(const std::string &v) {
   return true;
 }
 
-// sshd sends its identification line first; reading `SSH-2.0-` proves that
-// it accepts connections and answers, which a TCP connect alone does not.
+bool
+valid_address_family(const std::string &v) {
+  return v == "any" || v == "inet" || v == "inet6";
+}
+
+// seconds; nine digits stay below the int limit of sshd
+bool
+valid_seconds(const std::string &v) {
+  return all_of(v, "0123456789") && v.size() <= 9;
+}
+
 int
-banner_probe() {
+connect_loopback(const std::string &address_family) {
+  if (address_family == "inet6") {
+    int s = socket(AF_INET6, SOCK_STREAM, 0);
+    if (s < 0) return -1;
+    sockaddr_in6 addr{};
+    addr.sin6_family = AF_INET6;
+    addr.sin6_port = htons(PORT);
+    addr.sin6_addr = in6addr_loopback;
+    if (connect(s, reinterpret_cast<sockaddr *>(&addr), sizeof addr) == 0) return s;
+    close(s);
+    return -1;
+  }
   int s = socket(AF_INET, SOCK_STREAM, 0);
-  if (s < 0) return 1;
-  timeval timeout{3, 0};
-  setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof timeout);
+  if (s < 0) return -1;
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
   addr.sin_port = htons(PORT);
   inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
-  if (connect(s, reinterpret_cast<sockaddr *>(&addr), sizeof addr) != 0) {
-    close(s);
+  if (connect(s, reinterpret_cast<sockaddr *>(&addr), sizeof addr) == 0) return s;
+  close(s);
+  return -1;
+}
+
+// sshd sends its identification line first; reading `SSH-2.0-` proves that
+// it accepts connections and answers, which a TCP connect alone does not.
+int
+banner_probe(const std::string &address_family) {
+  const int s = connect_loopback(address_family);
+  if (s < 0) {
     std::cerr << "health check: nothing listens on port " << PORT << std::endl;
     return 1;
   }
+  timeval timeout{3, 0};
+  setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof timeout);
   char buffer[64];
   const ssize_t n = recv(s, buffer, sizeof buffer, 0);
   close(s);
@@ -205,9 +236,15 @@ int main(int argc, char *argv[]) try {
   // up in the health state and can be tested without starting the server
   if (!valid_permit_open(permit_open))
     throw std::runtime_error("invalid SSH_PERMIT_OPEN: expected any, none or host:port destinations separated by single spaces");
+  const std::string address_family = env_or("SSH_ADDRESS_FAMILY", "inet");
+  if (!valid_address_family(address_family))
+    throw std::runtime_error("invalid SSH_ADDRESS_FAMILY: expected any, inet or inet6");
+  const std::string client_alive_interval = env_or("SSH_CLIENT_ALIVE_INTERVAL", "60");
+  if (!valid_seconds(client_alive_interval))
+    throw std::runtime_error("invalid SSH_CLIENT_ALIVE_INTERVAL: expected a number of seconds, 0 switches the check off");
 
   if (argc > 1 && std::string(argv[1]) == "--healthcheck")
-    return banner_probe();
+    return banner_probe(address_family);
 
   // sshd does not run as root and can therefore let in only the user it runs
   // as: the run user of the image family
@@ -225,7 +262,7 @@ int main(int argc, char *argv[]) try {
 
   std::string conf;
   conf += "Port " + std::to_string(PORT) + "\n";
-  conf += "AddressFamily inet\n";
+  conf += "AddressFamily " + address_family + "\n";
   conf += "HostKey " + std::string(host_key) + "\n";
   conf += "PidFile none\n";
   conf += "LogLevel INFO\n";
@@ -251,7 +288,7 @@ int main(int argc, char *argv[]) try {
   conf += "PermitUserRC no\n";
   conf += "PermitUserEnvironment no\n";
   conf += "ForceCommand /usr/bin/init\n";
-  conf += "ClientAliveInterval 60\n";
+  conf += "ClientAliveInterval " + client_alive_interval + "\n";
   // last, so that a Match block in a snippet ends with the file; sshd takes
   // the first value of a directive, so a snippet changes a setting inside a
   // Match block, `Match all` for every connection

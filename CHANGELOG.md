@@ -1,5 +1,10 @@
 # Changelog
 
+- 2026-10-16 **1.0.3**
+    - `SSH_ADDRESS_FAMILY` chooses IPv4 (`inet`, the default as before), IPv6 (`inet6`) or both (`any`); the health check follows it
+    - `SSH_CLIENT_ALIVE_INTERVAL` sets the seconds after which an idle client is asked whether it is still there, 60 as before, `0` switches the check off
+    - a malformed value of either variable stops the container with `invalid` and the name of the variable
+
 - 2026-10-15 **1.0.2**
     - The jump host logs in as `somebody`, uid 100, the run user of every mwaeckerlin image, in place of a user `jump` of its own (uid 102): clients write `somebody@` in `ProxyJump`, and a volume for `/var/lib/ssh-jump` belongs to uid 100
 

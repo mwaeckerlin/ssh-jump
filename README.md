@@ -33,9 +33,11 @@ Without a configuration file, `ssh -J somebody@jump.example.com:2222 -p 2222 git
 | `/run/secrets/authorized_keys` | | The public keys that may log in as `somebody`, one per line, as a Docker secret. A password is never accepted. |
 | `/run/secrets/ssh_host_ed25519_key` | | The host key, as a Docker secret, readable for uid 100. The image copies it to `/run/ssh-jump` and adds a missing final line break, which sshd needs. Without it, the image creates a key in `/var/lib/ssh-jump` on the first start. |
 | `SSH_PERMIT_OPEN` | `any` | The destinations a client may reach: `host:port`, `[ipv6]:port`, `*` for any host or any port, separated by single spaces, or `none`. With `any`, the networks the container is attached to are the boundary. |
+| `SSH_ADDRESS_FAMILY` | `inet` | The addresses sshd listens on: `inet` for IPv4, `inet6` for IPv6, `any` for both. With `inet6` the health check connects to `[::1]:2222`. |
+| `SSH_CLIENT_ALIVE_INTERVAL` | `60` | Seconds without data from a client after which sshd asks the client whether it is still there; after three unanswered requests sshd closes the connection. `0` switches the check off. |
 | `/etc/ssh/sshd_config.d/*.conf` | | Snippets read after the configuration of the image. sshd takes the first value of a directive, so a snippet changes a setting inside a `Match` block; `Match all` applies to every connection. |
 
-`SSH_PERMIT_OPEN` is checked before sshd starts; a line break, a destination without a port or a port outside 1 to 65535 stops the container with `invalid SSH_PERMIT_OPEN`.
+The variables are checked before sshd starts. In `SSH_PERMIT_OPEN`, a line break, a destination without a port or a port outside 1 to 65535 stops the container with `invalid SSH_PERMIT_OPEN`; a value of `SSH_ADDRESS_FAMILY` other than `any`, `inet` or `inet6` stops it with `invalid SSH_ADDRESS_FAMILY`, and a value of `SSH_CLIENT_ALIVE_INTERVAL` that is not a number of seconds with at most nine digits with `invalid SSH_CLIENT_ALIVE_INTERVAL`.
 
 A snippet that allows only Gitea, for every connection:
 
@@ -52,7 +54,7 @@ The snippets are read by the user `somebody`, so a file `0644` owned by root is 
 
 ## Health check
 
-The image carries a `HEALTHCHECK` (every 60s, timeout 5s, three retries): `/usr/bin/init --healthcheck` connects to `127.0.0.1:2222` and reports healthy only when sshd sends its `SSH-2.0` identification. sshd logs every check as a closed connection from `127.0.0.1`.
+The image carries a `HEALTHCHECK` (every 60s, timeout 5s, three retries): `/usr/bin/init --healthcheck` connects to `127.0.0.1:2222`, with `SSH_ADDRESS_FAMILY=inet6` to `[::1]:2222`, and reports healthy only when sshd sends its `SSH-2.0` identification. sshd logs every check as a closed connection from `127.0.0.1`.
 
 ## Docker Swarm
 
@@ -89,9 +91,9 @@ npm test
 
 runs four suites and fails on any single error:
 
-1. **Docs contract** (`tests/docs-contract.sh`) — every feature of [FEATURES.md](FEATURES.md) has a test in [TESTS.md](TESTS.md).
+1. **Docs contract** (`tests/docs-contract.sh`) — every feature of [FEATURES.md](FEATURES.md) has a test in [TESTS.md](TESTS.md), and every variable the start program reads stands in the table under «Configuration» and in the `ENV` of the Dockerfile with the same default.
 2. **Image contract** (`tests/image-contract.sh`) — the image must be headless: no `/bin/sh`, no bash, no busybox, no perl, no `ssh`, no `scp`, no sftp server.
-3. **Config validation** (`tests/config-validation.sh`) — every malformed `SSH_PERMIT_OPEN` is refused, every valid one accepted, and the start program refuses to run a command.
+3. **Config validation** (`tests/config-validation.sh`) — every malformed `SSH_PERMIT_OPEN`, `SSH_ADDRESS_FAMILY` and `SSH_CLIENT_ALIVE_INTERVAL` is refused, every valid one accepted, the `sshd_config` the container writes carries the default and an override of `SSH_ADDRESS_FAMILY` and `SSH_CLIENT_ALIVE_INTERVAL`, and the start program refuses to run a command.
 4. **Functional e2e** (`tests/run.sh`, via `tests/docker-compose.yml`) — a real Gitea sits on a network the client cannot reach. The suite runs `git ls-remote`, `git clone` and `git push` through the jump host, and checks that the client does not reach Gitea without it. It checks that a command, a terminal, a remote forwarding, a password, an unknown key and other users are refused, that repeated failed logins block the client's address, that `SSH_PERMIT_OPEN` and a snippet limit the destinations, that the host key stays the same across a restart and comes from the secret, the image's health check, the user `somebody` with uid 100, and that no container has a host bind mount. The client is a small Alpine image with git and the ssh client, built from `tests/client/Dockerfile`.
 
 To start the image on its own, with your key:

@@ -8,7 +8,9 @@
 #   1. a feature number is defined more than once in FEATURES.md,
 #   2. a feature has no test entry in TESTS.md (untested feature),
 #   3. TESTS.md references a feature number that does not exist,
-#   4. a test file contains a skip/xfail marker — tests are never skipped.
+#   4. a variable init.cpp reads with a default is missing from the README
+#      table or from the ENV of the Dockerfile, or carries another default,
+#   5. a test file contains a skip/xfail marker — tests are never skipped.
 #
 # Usage: tests/docs-contract.sh
 
@@ -63,6 +65,27 @@ if [[ -f FEATURES.md && -f TESTS.md ]]; then
         _pass "no_dangling_references"
     fi
 fi
+
+# every variable init reads stands in the README table and in the ENV of the
+# Dockerfile, both with the default init falls back to
+VARIABLES=$(grep -oE 'env_or\("[A-Z_]+", "[^"]*"\)' init.cpp | sed -E 's/env_or\("([A-Z_]+)", "([^"]*)"\)/\1=\2/')
+if [[ -z "${VARIABLES}" ]]; then
+    _fail "variables_documented" "no env_or(\"NAME\", \"default\") found in init.cpp"
+fi
+for entry in ${VARIABLES}; do
+    name="${entry%%=*}"
+    default="${entry#*=}"
+    if grep -qF "| \`${name}\` | \`${default}\` |" README.md; then
+        _pass "readme_documents_${name}"
+    else
+        _fail "readme_documents_${name}" "README.md has no row «| \`${name}\` | \`${default}\` |»"
+    fi
+    if grep -qE "^\s+${name}=\"${default}\"" Dockerfile; then
+        _pass "dockerfile_env_${name}"
+    else
+        _fail "dockerfile_env_${name}" "Dockerfile has no ENV ${name}=\"${default}\""
+    fi
+done
 
 SKIPS=$(grep -rnE 'pytest\.mark\.skip|skipif|xfail|pytest\.skip\(' tests/e2e --include='*.py' 2>/dev/null)
 if [[ -n "${SKIPS}" ]]; then

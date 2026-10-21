@@ -2,11 +2,13 @@
 # Config validation: init must refuse malformed environment values and
 # every attempt to run it as a shell.
 #
-# SSH_PERMIT_OPEN is written into sshd_config. A value containing a newline
+# SSH_PERMIT_OPEN, SSH_ADDRESS_FAMILY and SSH_CLIENT_ALIVE_INTERVAL are
+# written into sshd_config. A value containing a newline
 # would smuggle extra directives into the configuration (config injection,
 # e.g. `PermitTTY yes`); a malformed destination would stop sshd with an
 # unclear parser error. init therefore validates the value up front and
-# exits with a clear `invalid SSH_PERMIT_OPEN` error before anything runs.
+# exits with a clear `invalid <variable>` error before anything runs. The
+# `config_*` checks start the container and read the sshd_config it wrote.
 #
 # The image is shell-free, so the checks run from outside: the
 # `--healthcheck` entrypoint path performs the same validation first, fails
@@ -37,15 +39,42 @@ _image_exists() {
 
 # A malformed value must abort with a message naming the variable.
 _reject() {
-    local name="$1" value="$2"
+    local name="$1" value="$2" variable="${3:-SSH_PERMIT_OPEN}"
     local out rc
     out=$(timeout 30 docker run --rm --pull=never --network none \
-              -e "SSH_PERMIT_OPEN=${value}" "${IMAGE}" --healthcheck 2>&1)
+              -e "${variable}=${value}" "${IMAGE}" --healthcheck 2>&1)
     rc=$?
-    if [[ ${rc} -ne 0 && "${out}" == *"invalid SSH_PERMIT_OPEN"* ]]; then
+    if [[ ${rc} -ne 0 && "${out}" == *"invalid ${variable}"* ]]; then
         _pass "reject_${name}"
     else
         _fail "reject_${name}" "value not rejected (rc=${rc}): ${out}"
+    fi
+}
+
+# The configuration sshd really reads: the container starts, init writes
+# /run/ssh-jump/sshd_config, and the file must carry the expected line.
+CONTAINERS=()
+_cleanup() { [[ ${#CONTAINERS[@]} -eq 0 ]] || docker rm -fv "${CONTAINERS[@]}" > /dev/null 2>&1; }
+trap _cleanup EXIT
+_effective() {
+    local name="$1" line="$2"
+    shift 2
+    local id conf=""
+    id=$(docker run -d --pull=never --network none "$@" "${IMAGE}" 2>&1) || {
+        _fail "config_${name}" "container did not start: ${id}"
+        return
+    }
+    CONTAINERS+=("${id}")
+    # init writes the file before it starts sshd; wait for it, at most 30s
+    for _ in $(seq 1 60); do
+        conf=$(docker cp "${id}:/run/ssh-jump/sshd_config" - 2>/dev/null | tar -xO 2>/dev/null)
+        [[ -n "${conf}" ]] && break
+        sleep 0.5
+    done
+    if grep -qx "${line}" <<< "${conf}"; then
+        _pass "config_${name}"
+    else
+        _fail "config_${name}" "no line «${line}» in sshd_config: ${conf:-$(docker logs "${id}" 2>&1)}"
     fi
 }
 
@@ -89,10 +118,22 @@ _reject permit_open_bad_port   "gitea:ssh"
 _reject permit_open_port_range "gitea:70000"
 _reject permit_open_bad_host   "gitea;rm:22"
 _reject permit_open_space      "gitea:22  other:22"
+_reject address_family_injection        $'inet\nPermitTTY yes'      SSH_ADDRESS_FAMILY
+_reject address_family_unknown          "ipv4"                      SSH_ADDRESS_FAMILY
+_reject client_alive_interval_injection $'60\nPermitTTY yes'        SSH_CLIENT_ALIVE_INTERVAL
+_reject client_alive_interval_not_number "1m"                       SSH_CLIENT_ALIVE_INTERVAL
+_reject client_alive_interval_negative  "-1"                        SSH_CLIENT_ALIVE_INTERVAL
 
 _accept defaults
 _accept permit_open_list -e SSH_PERMIT_OPEN='gitea:2222 tasks.gitea_gitea:2222 [fd00::1]:22 10.0.0.1:* *:443'
 _accept permit_open_none -e SSH_PERMIT_OPEN=none
+_accept address_family_any -e SSH_ADDRESS_FAMILY=any
+_accept client_alive_interval_off -e SSH_CLIENT_ALIVE_INTERVAL=0
+
+_effective address_family_default        "AddressFamily inet"
+_effective address_family_override       "AddressFamily inet6"       -e SSH_ADDRESS_FAMILY=inet6
+_effective client_alive_interval_default "ClientAliveInterval 60"
+_effective client_alive_interval_override "ClientAliveInterval 300"  -e SSH_CLIENT_ALIVE_INTERVAL=300
 
 _refuse_shell command "${IMAGE}" -c id
 
